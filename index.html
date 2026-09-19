@@ -310,6 +310,8 @@
   .qp-btn.active{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;}
   .qp-btn.qp-none.active{background:var(--text-faint);border-color:var(--text-faint);}
   .quick-add-full .quick-pick-row{flex:1 1 100%;}
+  .slot-pick{display:flex;gap:6px;margin-top:8px;}
+  .slot-pick.slot-pick-inline{margin-top:0;}
 
   /* ---------- Entregables view ---------- */
   .stats-row{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;}
@@ -562,6 +564,7 @@ const pad2 = n => String(n).padStart(2,'0');
 function toISODate(d){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
 function parseISODate(s){ const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); }
 function addDays(d,n){ const r=new Date(d); r.setDate(r.getDate()+n); return r; }
+function isWeekend(iso){ if(!iso) return false; const dow=parseISODate(iso).getDay(); return dow===0 || dow===6; }
 function startOfWeek(d){ const r=new Date(d); const dow=(r.getDay()+6)%7; return addDays(r,-dow); } // Monday start
 function isSameDate(a,b){ return toISODate(a)===toISODate(b); }
 const DOW_SHORT = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
@@ -1175,14 +1178,9 @@ function renderToday(){
   if(!dayTasks.length){
     tk.innerHTML = `<div class="empty-note">No tienes tareas para hoy. ¡Añade una!</div>`;
   } else {
-    // Dated-today tasks first, then a divider, then undated ones — so it's
-    // clear at a glance which ones are actually pinned to today.
-    const forToday = dayTasks.filter(t=>taskTouchesDate(t,todayISO));
-    const noDate = dayTasks.filter(t=>!t.date);
-    tk.innerHTML =
-      forToday.map(t=>taskRowHtml(t,{})).join('') +
-      (forToday.length && noDate.length ? `<div class="task-divider"></div>` : '') +
-      noDate.map(t=>taskRowHtml(t,{})).join('');
+    // Same grouping as the Tareas tab's "Hoy" square: dated-today + a divider
+    // + undated on weekdays, or Mañana/Tarde/Sin fecha on weekend days.
+    tk.innerHTML = renderDayTaskGroups(todayISO, dayTasks.filter(t=>!t.date));
   }
   wireTaskRows(tk);
 
@@ -1218,10 +1216,15 @@ function normalizeTaskDates(date, date2){
   return { date, date2 };
 }
 function taskTouchesDate(t, iso){ return t.date===iso || t.date2===iso; }
-async function addTask(title,date,categoryKey,retoKey,subjectKey,date2){
+// slot: 'morning' | 'afternoon' | null — only meaningful when `date` falls on a
+// weekend day (Sat/Sun). Weekend-dated tasks always end up with a slot (default
+// 'morning' if none was picked) so the Tareas view never has to show an
+// unlabeled "no franja" group; non-weekend tasks always have slot=null.
+async function addTask(title,date,categoryKey,retoKey,subjectKey,date2,slot){
   const clean = normalizeTaskDates(date, date2);
-  const id = await dbAdd('tasks', { title, date:clean.date, date2:clean.date2, done:false, categoryKey:categoryKey||null, retoKey:retoKey||null, subjectKey:subjectKey||null, createdAt:new Date().toISOString() });
-  if(!db){ state.tasks.push({id:'local'+Date.now(), title, date:clean.date, date2:clean.date2, done:false, categoryKey:categoryKey||null}); renderCurrentView(); }
+  const finalSlot = clean.date && isWeekend(clean.date) ? (slot==='afternoon'?'afternoon':'morning') : null;
+  const id = await dbAdd('tasks', { title, date:clean.date, date2:clean.date2, slot:finalSlot, done:false, categoryKey:categoryKey||null, retoKey:retoKey||null, subjectKey:subjectKey||null, createdAt:new Date().toISOString() });
+  if(!db){ state.tasks.push({id:'local'+Date.now(), title, date:clean.date, date2:clean.date2, slot:finalSlot, done:false, categoryKey:categoryKey||null}); renderCurrentView(); }
 }
 async function toggleTask(id){
   const t = state.tasks.find(t=>t.id===id); if(!t) return;
@@ -1236,7 +1239,8 @@ async function deleteTask(id){ await dbDelete('tasks', id); if(!db){ state.tasks
 function taskRowHtml(t, opts){
   opts = opts||{};
   const li = t.categoryKey? labelInfo(t.categoryKey): null;
-  const dateLabel = t.date2? `${shortDate(t.date)} + ${shortDate(t.date2)}` : shortDate(t.date);
+  const slotSuffix = t.date && isWeekend(t.date) ? (t.slot==='afternoon'?' · Tarde':' · Mañana') : '';
+  const dateLabel = (t.date2? `${shortDate(t.date)} + ${shortDate(t.date2)}` : shortDate(t.date)) + slotSuffix;
   return `<div class="${opts.full?'task-row-full':'task-row'}" data-tid="${t.id}">
     ${opts.showDate?`<span class="task-date tnum">${dateLabel}</span>`:''}
     <button class="task-check ${t.done?'done':''}" data-id="${t.id}">${t.done?checkSvg():''}</button>
@@ -1256,17 +1260,52 @@ function wireTaskRows(container){
   container.querySelectorAll('[data-del]').forEach(b=>b.onclick=(e)=>{ e.stopPropagation(); deleteTask(b.dataset.del); });
   container.querySelectorAll('[data-edit]').forEach(b=>b.onclick=(e)=>{ e.stopPropagation(); const t=state.tasks.find(x=>x.id===b.dataset.edit); if(t) openTaskModal(t); });
 }
+/* Renders one day's task list per Iraia's spec:
+   - Entresemana: tareas de ese día primero, una raya, y (si noDateTasks se
+     pasa, es un array) las tareas sin fecha debajo.
+   - Fin de semana (sáb/dom): grupo "Mañana", raya, grupo "Tarde", y (si
+     noDateTasks se pasa) otra raya + "Sin fecha" debajo.
+   noDateTasks: pásalo como array (aunque esté vacío) para incluir la sección
+   de sin-fecha; omítelo/null para no incluirla (así se comportan los
+   cuadrados de "Mañana" y "Pasado mañana", que sólo muestran lo de ese día). */
+function renderDayTaskGroups(iso, noDateTasks){
+  const byCreated = (a,b)=>(a.createdAt||'').localeCompare(b.createdAt||'');
+  const matched = state.tasks.filter(t=>taskTouchesDate(t,iso)).sort(byCreated);
+  const rowsOrEmpty = list => list.length? list.map(t=>taskRowHtml(t)).join('') : `<div class="ds-empty">Sin tareas</div>`;
+  if(isWeekend(iso)){
+    const morning = matched.filter(t=>t.slot!=='afternoon');
+    const afternoon = matched.filter(t=>t.slot==='afternoon');
+    let html = `<div class="task-group-label" style="margin:0 0 4px;">Mañana</div>${rowsOrEmpty(morning)}`
+      + `<div class="task-divider"></div><div class="task-group-label" style="margin:10px 0 4px;">Tarde</div>${rowsOrEmpty(afternoon)}`;
+    if(noDateTasks){
+      const sortedNoDate = noDateTasks.slice().sort(byCreated);
+      html += `<div class="task-divider"></div><div class="task-group-label" style="margin:10px 0 4px;">Sin fecha</div>${rowsOrEmpty(sortedNoDate)}`;
+    }
+    return html;
+  }
+  if(!noDateTasks) return rowsOrEmpty(matched);
+  const sortedNoDate = noDateTasks.slice().sort(byCreated);
+  if(!matched.length && !sortedNoDate.length) return `<div class="ds-empty">Sin tareas</div>`;
+  return matched.map(t=>taskRowHtml(t)).join('')
+    + (matched.length && sortedNoDate.length? `<div class="task-divider"></div>` : '')
+    + sortedNoDate.map(t=>taskRowHtml(t)).join('');
+}
 function daySquareHtml(label, iso, isToday, includeNoDate, expandable){
-  const dayTasks = state.tasks.filter(t=> taskTouchesDate(t,iso) || (includeNoDate && !t.date)).sort((a,b)=>(a.createdAt||'').localeCompare(b.createdAt||''));
   const d = parseISODate(iso);
+  const weekend = isWeekend(iso);
+  const noDateTasks = includeNoDate? state.tasks.filter(t=>!t.date) : null;
   return `<div class="day-square ${isToday?'is-today':''}">
     <div class="ds-head ${expandable?'clickable':''}" ${expandable?'data-expand-today="1" title="Ver el listado completo de hoy"':''}>
       <span class="ds-name">${label}</span><span class="ds-date">${d.getDate()} de ${MONTHS_ES[d.getMonth()]}</span>
       ${expandable?`<span class="ds-expand-hint">Ver todo ${arrowSvg('right')}</span>`:''}
     </div>
     <div class="ds-tasks" data-sq="${iso}">
-      ${dayTasks.length? dayTasks.map(t=>taskRowHtml(t)).join('') : `<div class="ds-empty">Sin tareas</div>`}
+      ${renderDayTaskGroups(iso, noDateTasks)}
     </div>
+    ${weekend?`<div class="slot-pick" data-slotfor="${iso}">
+      <button type="button" class="qp-btn slot-btn active" data-slot="morning">+ Mañana</button>
+      <button type="button" class="qp-btn slot-btn" data-slot="afternoon">+ Tarde</button>
+    </div>`:''}
     <div class="quick-add-row"><input type="text" data-sqinput="${iso}" placeholder="Añadir… (Enter)"></div>
   </div>`;
 }
@@ -1290,10 +1329,33 @@ function wireQuickPicks(root, inputId){
     row.querySelectorAll('.qp-btn').forEach(b=> b.classList.toggle('active', input.value === map[b.dataset.qp]));
   }
   row.querySelectorAll('.qp-btn').forEach(b=>{
-    b.onclick=()=>{ input.value = map[b.dataset.qp]; syncActive(); };
+    b.onclick=()=>{ input.value = map[b.dataset.qp]; syncActive(); input.dispatchEvent(new Event('change')); };
   });
   input.addEventListener('change', syncActive);
   syncActive();
+}
+/* Mañana/Tarde picker shown next to a date <input> whenever its value lands
+   on a weekend day — used by the task modal and the "Todas las tareas"
+   quick-add row (the day-squares have their own always-visible version,
+   wired separately, since their date never changes). */
+function slotPickRowHtml(forId, currentSlot){
+  return `<div class="slot-pick" data-for="${forId}" style="display:none;">
+    <button type="button" class="qp-btn slot-btn ${currentSlot!=='afternoon'?'active':''}" data-slot="morning">Mañana</button>
+    <button type="button" class="qp-btn slot-btn ${currentSlot==='afternoon'?'active':''}" data-slot="afternoon">Tarde</button>
+  </div>`;
+}
+function wireSlotPick(root, dateInputId){
+  const dateInput = root.querySelector('#'+dateInputId);
+  const pick = root.querySelector(`.slot-pick[data-for="${dateInputId}"]`);
+  if(!dateInput || !pick) return { getSlot:()=>null };
+  function sync(){ pick.style.display = isWeekend(dateInput.value) ? '' : 'none'; }
+  pick.querySelectorAll('.slot-btn').forEach(b=>b.onclick=()=>{
+    pick.querySelectorAll('.slot-btn').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+  });
+  dateInput.addEventListener('change', sync);
+  sync();
+  return { getSlot: ()=> (pick.querySelector('.slot-btn.active')||{}).dataset?.slot || 'morning' };
 }
 function renderTareas(){
   const root=document.getElementById('view-root');
@@ -1320,6 +1382,7 @@ function renderTareas(){
         <input type="text" id="full-task-title" placeholder="Nueva tarea…">
         ${quickPickRowHtml('full-task-date')}
         <input type="date" id="full-task-date" value="${todayISO}">
+        ${slotPickRowHtml('full-task-date', null)}
         <select id="full-task-cat"><option value="">Sin categoría</option>${allLabels().map(l=>`<option value="${l.key}">${l.name}</option>`).join('')}</select>
         <button class="btn btn-primary" id="full-task-add">Añadir</button>
       </div>
@@ -1329,12 +1392,24 @@ function renderTareas(){
 
   // wire day squares
   root.querySelectorAll('[data-sq]').forEach(box=>wireTaskRows(box));
+  root.querySelectorAll('.slot-pick[data-slotfor]').forEach(row=>{
+    row.querySelectorAll('.slot-btn').forEach(b=>b.onclick=()=>{
+      row.querySelectorAll('.slot-btn').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active');
+    });
+  });
   root.querySelectorAll('[data-sqinput]').forEach(inp=>{
-    inp.onkeydown=(e)=>{ if(e.key==='Enter' && inp.value.trim()){ addTask(inp.value.trim(), inp.dataset.sqinput); inp.value=''; } };
+    inp.onkeydown=(e)=>{ if(e.key==='Enter' && inp.value.trim()){
+      const slotRow = root.querySelector(`.slot-pick[data-slotfor="${inp.dataset.sqinput}"]`);
+      const slot = slotRow? (slotRow.querySelector('.slot-btn.active')||{}).dataset?.slot : null;
+      addTask(inp.value.trim(), inp.dataset.sqinput, null, undefined, undefined, undefined, slot);
+      inp.value='';
+    } };
   });
   const expandHead = root.querySelector('[data-expand-today]');
   if(expandHead) expandHead.onclick=()=>{ state.tareasHoyExpanded=true; renderCurrentView(); };
   wireQuickPicks(root, 'full-task-date');
+  const fullSlotCtl = wireSlotPick(root, 'full-task-date');
 
   const list = document.getElementById('tareas-list');
   let html='';
@@ -1361,7 +1436,7 @@ function renderTareas(){
     if(!title){ toast('Ponle un nombre a la tarea'); return; }
     const date=document.getElementById('full-task-date').value || null;
     const cat=document.getElementById('full-task-cat').value || null;
-    addTask(title,date,cat);
+    addTask(title,date,cat,undefined,undefined,undefined,fullSlotCtl.getSlot());
     document.getElementById('full-task-title').value='';
   };
   document.getElementById('full-task-title').onkeydown=(e)=>{ if(e.key==='Enter') document.getElementById('full-task-add').click(); };
@@ -1425,6 +1500,7 @@ function openTaskModal(t){
       <label>¿Para cuándo?</label>
       ${quickPickRowHtml('tk-date')}
       <input type="date" id="tk-date" value="${t.date||''}" style="margin-top:8px;">
+      ${slotPickRowHtml('tk-date', t.slot)}
       <button type="button" class="subtle-btn" id="tk-add-date2" style="margin-top:8px;${hasDate2?'display:none;':''}">+ Añadir otro día</button>
       <div id="tk-date2-wrap" style="${hasDate2?'':'display:none;'}margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);">
         <label style="display:block;font-size:12px;color:var(--text-faint);margin-bottom:6px;">Segundo día (por si no sabes cuál de los dos)</label>
@@ -1446,13 +1522,15 @@ function openTaskModal(t){
       const date2 = date2wrapVisible? (modalEl.querySelector('#tk-date2').value||null) : null;
       const categoryKey=modalEl.querySelector('#tk-cat').value||null;
       const clean = normalizeTaskDates(date, date2);
-      if(isEdit){ await dbUpdate('tasks', t.id, {title,date:clean.date,date2:clean.date2,categoryKey}); if(!db) Object.assign(t,{title,date:clean.date,date2:clean.date2,categoryKey}); }
-      else { await addTask(title,clean.date,categoryKey,undefined,undefined,clean.date2); }
+      const slot = clean.date && isWeekend(clean.date) ? tkSlotCtl.getSlot() : null;
+      if(isEdit){ await dbUpdate('tasks', t.id, {title,date:clean.date,date2:clean.date2,slot,categoryKey}); if(!db) Object.assign(t,{title,date:clean.date,date2:clean.date2,slot,categoryKey}); }
+      else { await addTask(title,clean.date,categoryKey,undefined,undefined,clean.date2,slot); }
       closeModal(); renderCurrentView();
     }},
   ], isEdit? {label:'Eliminar', action: async ()=>{ await deleteTask(t.id); closeModal(); renderCurrentView(); }} : null);
   wireQuickPicks(modalEl, 'tk-date');
   wireQuickPicks(modalEl, 'tk-date2');
+  const tkSlotCtl = wireSlotPick(modalEl, 'tk-date');
   modalEl.querySelector('#tk-add-date2').onclick=()=>{
     modalEl.querySelector('#tk-date2-wrap').style.display='';
     modalEl.querySelector('#tk-add-date2').style.display='none';
