@@ -275,6 +275,9 @@
   .today-alert .btn:hover{background:var(--surface-2);}
 
   /* ---------- Tareas view ---------- */
+  .tareas-nav{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+  .tareas-nav .icon-btn{border:1px solid var(--border);border-radius:8px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;}
+  .task-row .task-date{font-family:var(--font-mono);font-size:10.5px;color:var(--text-faint);flex:none;}
   .day-squares{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px;}
   @media (max-width:900px){.day-squares{grid-template-columns:1fr;}}
   .day-square{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-l);padding:16px 18px;display:flex;flex-direction:column;min-height:180px;}
@@ -591,6 +594,11 @@ const state = {
   notaSubjectSel: null,        // subject open in Notas detail
   notaViewMode: 'subject',     // 'subject' | 'reto'
   tareasHoyExpanded: false,    // Tareas tab: showing the expanded "Hoy" listing?
+  tareasWindowStart: null,     // Tareas tab: offset (days from today) of the leftmost of
+                                // the 3 day-squares. null = automatic (Hoy/Mañana/Pasado
+                                // mañana, or Ayer/Hoy/Mañana if hay tareas atrasadas sin
+                                // hacer) — the arrows set an explicit number to browse
+                                // other days without losing that default.
   calLegendOpen: false,        // Calendar tab: category filter row expanded?
   loaded:false,
 };
@@ -1290,6 +1298,30 @@ function renderDayTaskGroups(iso, noDateTasks){
     + (matched.length && sortedNoDate.length? `<div class="task-divider"></div>` : '')
     + sortedNoDate.map(t=>taskRowHtml(t)).join('');
 }
+function relativeDayLabel(offset){
+  if(offset===0) return 'Hoy';
+  if(offset===1) return 'Mañana';
+  if(offset===2) return 'Pasado mañana';
+  if(offset===-1) return 'Ayer';
+  if(offset===-2) return 'Anteayer';
+  return offset>0 ? `Dentro de ${offset} días` : `Hace ${Math.abs(offset)} días`;
+}
+/* The leftmost square of the Tareas window: whenever offset -1 is showing
+   (by default, or because she scrolled there with the arrows), it doesn't
+   just show tasks dated literally "ayer" — it catches EVERY undone task
+   whose date is before today, however old, so nothing she hasn't finished
+   ever quietly falls off the edge of the 3-day window. Each row shows its
+   real date since they can span several different past days. */
+function overdueSquareHtml(){
+  const todayISO = toISODate(new Date());
+  const overdueTasks = state.tasks.filter(t=>!t.done && t.date && t.date<todayISO).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+  return `<div class="day-square">
+    <div class="ds-head"><span class="ds-name">Ayer</span><span class="ds-date">y antes, sin completar</span></div>
+    <div class="ds-tasks" data-sq="__overdue__">
+      ${overdueTasks.length? overdueTasks.map(t=>taskRowHtml(t,{showDate:true})).join('') : `<div class="ds-empty">No tienes tareas atrasadas 🎉</div>`}
+    </div>
+  </div>`;
+}
 function daySquareHtml(label, iso, isToday, includeNoDate, expandable){
   const d = parseISODate(iso);
   const weekend = isWeekend(iso);
@@ -1361,8 +1393,6 @@ function renderTareas(){
   const root=document.getElementById('view-root');
   if(state.tareasHoyExpanded){ renderTareasHoyExpanded(root); return; }
   const todayISO=toISODate(new Date());
-  const tomorrowISO=toISODate(addDays(new Date(),1));
-  const dat2ISO=toISODate(addDays(new Date(),2));
 
   const pending = state.tasks.filter(t=>!t.done);
   const overdue = pending.filter(t=>t.date && t.date<todayISO).sort((a,b)=> (a.date||'').localeCompare(b.date||''));
@@ -1370,11 +1400,28 @@ function renderTareas(){
   const upcoming = pending.filter(t=>t.date && t.date>todayISO).sort((a,b)=> (a.date||'').localeCompare(b.date||''));
   const done = state.tasks.filter(t=>t.done).sort((a,b)=> (b.date||'').localeCompare(a.date||''));
 
+  // Sliding 3-day window for the squares above: by default it starts at -1
+  // (Ayer/Hoy/Mañana) when hay tareas atrasadas sin hacer, so those never
+  // quietly disappear once the day passes; otherwise Hoy/Mañana/Pasado mañana
+  // as always. The arrows override this with an explicit offset to browse
+  // other days; "Volver a hoy" clears the override back to automatic.
+  const windowAuto = state.tareasWindowStart==null;
+  const windowStart = windowAuto ? (overdue.length? -1 : 0) : state.tareasWindowStart;
+  const squaresHtml = [0,1,2].map(i=>{
+    const offset = windowStart + i;
+    if(offset===-1) return overdueSquareHtml();
+    const iso = toISODate(addDays(new Date(), offset));
+    return daySquareHtml(relativeDayLabel(offset), iso, offset===0, offset===0, offset===0);
+  }).join('');
+
   root.innerHTML = `
+    <div class="tareas-nav">
+      <button type="button" class="icon-btn" id="tareas-nav-prev" title="Días anteriores">${arrowSvg('left')}</button>
+      ${!windowAuto?`<button type="button" class="btn btn-ghost btn-sm" id="tareas-nav-today">Volver a hoy</button>`:''}
+      <button type="button" class="icon-btn" id="tareas-nav-next" title="Días siguientes">${arrowSvg('right')}</button>
+    </div>
     <div class="day-squares">
-      ${daySquareHtml('Hoy', todayISO, true, true, true)}
-      ${daySquareHtml('Mañana', tomorrowISO, false)}
-      ${daySquareHtml('Pasado mañana', dat2ISO, false)}
+      ${squaresHtml}
     </div>
     <div class="panel">
       <div class="panel-title"><h3>Todas las tareas</h3></div>
@@ -1392,6 +1439,10 @@ function renderTareas(){
 
   // wire day squares
   root.querySelectorAll('[data-sq]').forEach(box=>wireTaskRows(box));
+  document.getElementById('tareas-nav-prev').onclick=()=>{ state.tareasWindowStart = windowStart-1; renderCurrentView(); };
+  document.getElementById('tareas-nav-next').onclick=()=>{ state.tareasWindowStart = windowStart+1; renderCurrentView(); };
+  const navTodayBtn = document.getElementById('tareas-nav-today');
+  if(navTodayBtn) navTodayBtn.onclick=()=>{ state.tareasWindowStart = null; renderCurrentView(); };
   root.querySelectorAll('.slot-pick[data-slotfor]').forEach(row=>{
     row.querySelectorAll('.slot-btn').forEach(b=>b.onclick=()=>{
       row.querySelectorAll('.slot-btn').forEach(x=>x.classList.remove('active'));
