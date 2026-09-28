@@ -316,6 +316,21 @@
   .slot-pick{display:flex;gap:6px;margin-top:8px;}
   .slot-pick.slot-pick-inline{margin-top:0;}
 
+  /* ---------- Asistencia view ---------- */
+  .asis-block{padding:12px 0;border-bottom:1px solid var(--border);}
+  .asis-block:last-child{border-bottom:none;}
+  .asis-block-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;}
+  .asis-reto-name{font-size:13px;font-weight:600;color:var(--text-muted);}
+  .asis-total-input{width:92px;border:1px solid var(--border);border-radius:8px;padding:5px 8px;background:var(--surface-2);font-size:12.5px;text-align:right;}
+  .asis-status{font-size:12px;color:var(--text-faint);margin-bottom:8px;}
+  .asis-status.danger{color:var(--danger);font-weight:600;}
+  .asis-status.muted{font-style:italic;}
+  .asis-add-row{display:flex;gap:8px;margin-bottom:8px;}
+  .asis-add-row input[type=date]{flex:1;border:1px solid var(--border);border-radius:8px;padding:6px 9px;background:var(--surface);font-size:12.5px;}
+  .asis-faltas-list{display:flex;flex-wrap:wrap;gap:6px;}
+  .asis-falta-item{display:flex;align-items:center;gap:2px;font-size:11px;color:var(--text-faint);background:var(--surface-2);border-radius:7px;padding:3px 4px 3px 9px;}
+  .asis-falta-item .icon-btn{padding:3px;}
+
   /* ---------- Entregables view ---------- */
   .stats-row{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;}
   .stat-chip{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-m);padding:10px 18px;display:flex;flex-direction:column;gap:2px;min-width:96px;}
@@ -589,6 +604,8 @@ const state = {
   grades: {},                  // docId -> {value,...}
   categories: [],              // custom (non-academic) categories
   deliverables: [],            // entregables
+  attendance: [],               // logged missed classes: {subjectKey,reto,date}
+  attendanceTotals: [],         // per subject+reto: {subjectKey,reto,total}
   entregCalCursor: new Date(), // month cursor for the mini entregables calendar
   hiddenKeys: new Set(),       // dimmed in legend/filter
   notaSubjectSel: null,        // subject open in Notas detail
@@ -715,6 +732,8 @@ async function initDb(){
   db.collection('tasks').onSnapshot(snap=>{ state.tasks = snap.docs.map(d=>({id:d.id,...d.data()})); renderCurrentView(); }, ()=>{});
   db.collection('grades').onSnapshot(snap=>{ const g={}; snap.docs.forEach(d=>g[d.id]=d.data()); state.grades=g; renderCurrentView(); }, ()=>{});
   db.collection('deliverables').onSnapshot(snap=>{ state.deliverables = snap.docs.map(d=>({id:d.id,...d.data()})); renderCurrentView(); }, ()=>{});
+  db.collection('attendance').onSnapshot(snap=>{ state.attendance = snap.docs.map(d=>({id:d.id,...d.data()})); renderCurrentView(); }, ()=>{});
+  db.collection('attendanceTotals').onSnapshot(snap=>{ state.attendanceTotals = snap.docs.map(d=>({id:d.id,...d.data()})); renderCurrentView(); }, ()=>{});
   db.collection('categories').onSnapshot(snap=>{ state.categories = snap.docs.map(d=>({id:d.id,...d.data()})); renderCalendarLegend(); renderCurrentView(); }, async snap=>{
     if(snap && snap.empty){ for(const c of DEFAULT_CATEGORIES){ await db.collection('categories').doc(c.key).set(c); } }
   });
@@ -931,11 +950,12 @@ const TAB_ICONS = {
   notas: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h7M9 11h7"/></svg>',
   tareas: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 11 3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
   entregables: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>',
+  asistencia: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="3"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="m9 15.5 1.8 1.8L15.5 13"/></svg>',
 };
-const TAB_LABELS = { today:'Hoy', calendar:'Calendario', tareas:'Tareas', entregables:'Entregables', notas:'Notas' };
+const TAB_LABELS = { today:'Hoy', calendar:'Calendario', tareas:'Tareas', entregables:'Entregables', notas:'Notas', asistencia:'Asistencia' };
 function renderSidebar(){
   const tabs = document.getElementById('tabs');
-  tabs.innerHTML = ['today','calendar','tareas','entregables','notas'].map(v=>{
+  tabs.innerHTML = ['today','calendar','tareas','entregables','notas','asistencia'].map(v=>{
     const label = TAB_LABELS[v];
     return `<button class="tab-btn ${state.view===v?'active':''}" data-tab="${v}">${TAB_ICONS[v]}<span>${label}</span></button>`;
   }).join('');
@@ -1011,6 +1031,8 @@ function renderTopbar(){
     bar.innerHTML = `<div style="font-family:var(--font-display);font-size:18px;font-weight:600;">Entregables</div>
       <button class="btn btn-primary" id="btn-add-deliv-top">+ Añadir entregable</button>`;
     document.getElementById('btn-add-deliv-top').onclick=()=>openDeliverableModal();
+  } else if(state.view==='asistencia'){
+    bar.innerHTML = `<div style="font-family:var(--font-display);font-size:18px;font-weight:600;">Asistencia</div>`;
   }
   // Keep #topbar's own sticky offset in sync with #app-header's real height
   // (so nothing depends on a hardcoded pixel guess).
@@ -1047,6 +1069,7 @@ function renderCurrentView(){
   else if(state.view==='notas') renderNotas();
   else if(state.view==='tareas') renderTareas();
   else if(state.view==='entregables') renderEntregables();
+  else if(state.view==='asistencia') renderAsistencia();
   const t = document.getElementById('cal-title'); if(t) t.textContent = calTitleText();
 }
 
@@ -2429,6 +2452,84 @@ function compRowHtml(label,weight,g,finalWeight,reto,comp){
     <span class="comp-val ${g?'':'empty'} tnum">${g?g.value.toFixed(1).replace(/\.0$/,''):'Sin nota'}</span>
     <button type="button" class="comp-edit-btn" title="Editar nota" tabindex="-1">${editSvg()}</button>
   </div>`;
+}
+
+/* =========================================================================
+   ASISTENCIA VIEW
+   ========================================================================= */
+// Attendance is tracked per subject and per reto, reusing the same
+// SUBJECTS/RETO_ORDER/retoWeight data Notas already has, so it only shows
+// the retos that actually apply to each subject. She sets "total de clases"
+// for that reto once; each miss she logs eats into the 30% she's allowed
+// (70% asistencia mínima para poder examinarse), and the line turns red
+// once she goes over it.
+function attendanceTotalFor(subjectKey, reto){
+  const doc = state.attendanceTotals.find(t=>t.subjectKey===subjectKey && t.reto===reto);
+  return doc && typeof doc.total==='number' ? doc.total : null;
+}
+function attendanceFaltasFor(subjectKey, reto){
+  return state.attendance.filter(a=>a.subjectKey===subjectKey && a.reto===reto)
+    .sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+}
+function renderAsistencia(){
+  const root=document.getElementById('view-root');
+  root.innerHTML = `<div id="asistencia-list"></div>`;
+  const list = document.getElementById('asistencia-list');
+  list.innerHTML = SUBJECTS.map(s=>{
+    const retos = s.flat? ['unica'] : RETO_ORDER.filter(r=>(s.retoWeight[r]||0)>0);
+    if(!retos.length) return '';
+    return `<div class="panel" style="margin-bottom:16px;">
+      <div class="panel-title"><h3 style="color:${s.color}">${escapeHtml(s.name)}</h3></div>
+      ${retos.map(r=>asisRetoBlockHtml(s,r)).join('')}
+    </div>`;
+  }).join('');
+  wireAsistencia(list);
+}
+function asisRetoBlockHtml(s, reto){
+  const total = attendanceTotalFor(s.key, reto);
+  const faltas = attendanceFaltasFor(s.key, reto);
+  const n = faltas.length;
+  const maxFaltas = total!=null? Math.floor(total*0.30) : null;
+  const quedan = maxFaltas!=null? maxFaltas-n : null;
+  const enRiesgo = maxFaltas!=null && n>maxFaltas;
+  const todayISO = toISODate(new Date());
+  return `<div class="asis-block" data-subject="${s.key}" data-reto="${reto}">
+    <div class="asis-block-head">
+      <span class="asis-reto-name">${reto==='unica'?'Asistencia':RETO_LABEL[reto]}</span>
+      <input type="number" min="0" class="asis-total-input" data-total="${s.key}|${reto}" placeholder="Total clases" value="${total!=null?total:''}">
+    </div>
+    ${total!=null?`<div class="asis-status ${enRiesgo?'danger':''}">
+      ${n} falta${n===1?'':'s'} de ${total} (${Math.round(n/total*100)}%) — ${enRiesgo? 'has superado el 30% permitido' : `puedes faltar ${quedan} más`}
+    </div>`:`<div class="asis-status muted">Pon el total de clases de este reto para ver el %</div>`}
+    <div class="asis-add-row">
+      <input type="date" class="asis-date-input" value="${todayISO}">
+      <button type="button" class="btn btn-sm" data-add-falta="${s.key}|${reto}">+ Apuntar falta</button>
+    </div>
+    ${n? `<div class="asis-faltas-list">${faltas.map(f=>`
+      <div class="asis-falta-item"><span class="tnum">${shortDate(f.date)}</span><button type="button" class="icon-btn" data-del-falta="${f.id}" title="Quitar">${trashSvg()}</button></div>
+    `).join('')}</div>`:''}
+  </div>`;
+}
+function wireAsistencia(list){
+  list.querySelectorAll('.asis-total-input').forEach(inp=>{
+    inp.onchange=()=>{
+      const [subjectKey,reto] = inp.dataset.total.split('|');
+      if(inp.value==='') return;
+      const v = Math.max(0, parseInt(inp.value,10)||0);
+      dbSet('attendanceTotals', `${subjectKey}__${reto}`, {subjectKey,reto,total:v});
+    };
+  });
+  list.querySelectorAll('[data-add-falta]').forEach(btn=>{
+    btn.onclick=()=>{
+      const [subjectKey,reto] = btn.dataset.addFalta.split('|');
+      const dateInput = btn.closest('.asis-add-row').querySelector('.asis-date-input');
+      const date = dateInput.value || toISODate(new Date());
+      dbAdd('attendance', {subjectKey,reto,date,createdAt:new Date().toISOString()});
+    };
+  });
+  list.querySelectorAll('[data-del-falta]').forEach(btn=>{
+    btn.onclick=()=>dbDelete('attendance', btn.dataset.delFalta);
+  });
 }
 
 /* =========================================================================
