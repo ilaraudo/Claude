@@ -2506,7 +2506,10 @@ function classesSoFar(subjectKey, reto){
   if(reto!=='viaje' && !demo[reto]) return null;  // this reto's own Demo day isn't in the calendar yet
   const todayISO = toISODate(new Date());
   const startISO = prevReto? toISODate(addDays(parseISODate(demo[prevReto]),1)) : '2000-01-01';
-  const endISO = reto==='viaje' ? todayISO : (demo[reto]<todayISO? demo[reto] : todayISO);
+  // Count the WHOLE reto period (start to its Demo day), not just up to today —
+  // her calendar already has the full course schedule loaded, so classes that
+  // haven't happened yet still count toward the total she can miss from.
+  const endISO = reto==='viaje' ? todayISO : demo[reto];
   const startDate = parseISODate(startISO), endDate = parseISODate(endISO);
   if(endDate<startDate) return 0;
   return occurrencesInRange(startDate, endDate)
